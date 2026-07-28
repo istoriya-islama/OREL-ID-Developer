@@ -77,7 +77,7 @@ export default function StoragePage() {
   const freeMB = limitMB - usedMB
   const usedPct = Math.min(Math.round((usedMB / limitMB) * 100), 100)
 
-  const isOrelFile = (file: File) => file.name.endsWith('.orel')
+  const isOrelFile = (file: File) => file.name.endsWith('.orle')
 
   const handleUpload = async (file: File) => {
     setUploading(true)
@@ -108,7 +108,7 @@ export default function StoragePage() {
     const file = e.dataTransfer.files[0]
     if (!file) return
     if (!isOrelFile(file)) {
-      showToast('Только файлы с расширением .orel', 'error')
+      showToast('Только файлы с расширением .orle', 'error')
       return
     }
     handleUpload(file)
@@ -168,13 +168,13 @@ export default function StoragePage() {
         <input
           ref={fileInputRef}
           type="file"
-          accept=".orel"
+          accept=".orle"
           className="hidden"
           onChange={e => {
             const f = e.target.files?.[0]
             if (!f) return
             if (!isOrelFile(f)) {
-              showToast('Только файлы с расширением .orel', 'error')
+              showToast('Только файлы с расширением .orle', 'error')
               e.target.value = ''
               return
             }
@@ -188,7 +188,7 @@ export default function StoragePage() {
             {uploading ? 'Загрузка...' : 'Перетащите файл или нажмите для выбора'}
           </p>
           <p className="text-xs text-zinc-600">
-            Только <span className="font-mono text-zinc-500">.orel</span> · Свободно: {freeMB.toFixed(1)} МБ
+            Только <span className="font-mono text-zinc-500">.orle</span> · Свободно: {freeMB.toFixed(1)} МБ
           </p>
         </div>
       </div>
@@ -208,7 +208,7 @@ export default function StoragePage() {
           <div className="flex flex-col items-center py-14 text-zinc-600">
             <RiFileLine className="text-3xl mb-2" />
             <p className="text-sm">Файлов нет</p>
-            <p className="text-xs mt-1">Загрузите .orel файл через форму выше</p>
+            <p className="text-xs mt-1">Загрузите .orle файл через форму выше</p>
           </div>
         ) : (
           <>
