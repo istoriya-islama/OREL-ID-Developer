@@ -4,7 +4,12 @@ const API_URL = 'https://orel-insider-api.onrender.com'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-export type UserRole = 'user' | 'developer' | 'developer_verified' | 'admin'
+export type UserRole =
+	| 'user'
+	| 'insider'
+	| 'developer'
+	| 'developer_verified'
+	| 'admin'
 
 export interface User {
 	_id: string
@@ -12,6 +17,7 @@ export interface User {
 	email: string
 	role: UserRole
 	isAdmin: boolean
+	twoFactorEnabled?: boolean
 	filesCount: number
 	createdAt: string
 	updatedAt: string
@@ -34,6 +40,19 @@ export interface LoginResponse {
 	user: User
 }
 
+export interface TwoFactorChallenge {
+	twoFactorRequired: true
+	challengeToken: string
+	message: string
+}
+
+/** Ответ входа: либо вошли, либо нужен код 2FA */
+export type LoginResult = LoginResponse | TwoFactorChallenge
+
+export function isTwoFactorChallenge(r: LoginResult): r is TwoFactorChallenge {
+	return 'twoFactorRequired' in r && r.twoFactorRequired === true
+}
+
 export interface StorageFile {
 	_id: string
 	userId: string
@@ -42,6 +61,50 @@ export interface StorageFile {
 	size: number
 	createdAt: string
 	updatedAt: string
+}
+
+export interface OidcApp {
+	clientId: string
+	name: string
+	redirectUris: string[]
+	confidential: boolean
+	requiredRole: UserRole | null
+	firstParty: boolean
+	active: boolean
+	createdAt: string
+	updatedAt: string
+}
+
+export interface CreateAppDto {
+	name: string
+	redirectUris: string[]
+	/** true: серверное приложение с секретом. По умолчанию public + PKCE */
+	confidential?: boolean
+	/** Только админ */
+	requiredRole?: UserRole
+	/** Только админ */
+	firstParty?: boolean
+}
+
+export interface UpdateAppDto {
+	name?: string
+	redirectUris?: string[]
+	active?: boolean
+	/** Только админ. 'none' снимает ограничение */
+	requiredRole?: UserRole | 'none'
+	/** Только админ */
+	firstParty?: boolean
+}
+
+async function handle<T>(res: Response, fallback: string): Promise<T> {
+	if (!res.ok) {
+		const error = await res.json().catch(() => null)
+		const message = Array.isArray(error?.message)
+			? error.message.join(', ')
+			: error?.message
+		throw new Error(message || fallback)
+	}
+	return res.json()
 }
 
 // ─── API (аккаунт + Storage) ──────────────────────────────────────────────────
@@ -63,7 +126,7 @@ export const api = {
 		return res.json()
 	},
 
-	async login(data: LoginDto): Promise<LoginResponse> {
+	async login(data: LoginDto): Promise<LoginResult> {
 		const res = await fetch(`${API_URL}/auth/login`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
@@ -77,6 +140,24 @@ export const api = {
 		return res.json()
 	},
 
+	/** Шаг 2 входа, если у аккаунта включена 2FA: код из приложения или резервный код */
+	async verifyTwoFactorLogin(
+		challengeToken: string,
+		code: string,
+	): Promise<LoginResponse> {
+		const res = await fetch(`${API_URL}/auth/2fa/verify-login`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			credentials: 'include',
+			body: JSON.stringify({ challengeToken, code }),
+		})
+		if (!res.ok) {
+			const error = await res.json()
+			throw new Error(error.message || 'Verification failed')
+		}
+		return res.json()
+	},
+
 	async refreshToken(): Promise<{ message: string }> {
 		const res = await fetch(`${API_URL}/auth/refresh`, {
 			method: 'POST',
@@ -86,6 +167,25 @@ export const api = {
 			throw new Error('Refresh failed')
 		}
 		return res.json()
+	},
+
+	/**
+	 * Тихая проверка входа для страниц, которые должны работать и без входа.
+	 * В отличие от getCurrentUser: без редиректа на страницу входа и без выхода из аккаунта.
+	 * Возвращает пользователя или null (не вошёл / нет сети).
+	 */
+	async getSession(): Promise<User | null> {
+		const read = () => fetch(`${API_URL}/users/me`, { credentials: 'include' })
+		try {
+			let res = await read()
+			if (res.status === 401) {
+				await api.refreshToken()
+				res = await read()
+			}
+			return res.ok ? ((await res.json()) as User) : null
+		} catch {
+			return null
+		}
 	},
 
 	async forgotPassword(email: string): Promise<{ message: string }> {
@@ -173,6 +273,55 @@ export const api = {
 			throw new Error(error.message || 'Failed')
 		}
 		return res.json()
+	},
+
+	// ── Приложения («Войти через OREL ID») ────────────────────────────────
+
+	/** clientSecret приходит ТОЛЬКО здесь и только для confidential-приложений */
+	async createApp(
+		data: CreateAppDto,
+	): Promise<{ app: OidcApp; clientSecret?: string }> {
+		const res = await fetchWithAuth(`${API_URL}/developer/apps`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(data),
+		})
+		return handle(res, 'Failed to create app')
+	},
+
+	async getApps(): Promise<OidcApp[]> {
+		const res = await fetchWithAuth(`${API_URL}/developer/apps`)
+		return handle(res, 'Failed to fetch apps')
+	},
+
+	async getApp(clientId: string): Promise<OidcApp> {
+		const res = await fetchWithAuth(`${API_URL}/developer/apps/${clientId}`)
+		return handle(res, 'App not found')
+	},
+
+	async updateApp(clientId: string, data: UpdateAppDto): Promise<OidcApp> {
+		const res = await fetchWithAuth(`${API_URL}/developer/apps/${clientId}`, {
+			method: 'PATCH',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(data),
+		})
+		return handle(res, 'Failed to update app')
+	},
+
+	/** Новый секрет показывается один раз, старый перестаёт работать */
+	async rotateAppSecret(clientId: string): Promise<{ clientSecret: string }> {
+		const res = await fetchWithAuth(
+			`${API_URL}/developer/apps/${clientId}/rotate-secret`,
+			{ method: 'POST' },
+		)
+		return handle(res, 'Failed to rotate secret')
+	},
+
+	async deleteApp(clientId: string): Promise<{ message: string }> {
+		const res = await fetchWithAuth(`${API_URL}/developer/apps/${clientId}`, {
+			method: 'DELETE',
+		})
+		return handle(res, 'Failed to delete app')
 	},
 
 	// ── Storage ───────────────────────────────────────────────────────────
